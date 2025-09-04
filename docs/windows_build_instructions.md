@@ -1,8 +1,8 @@
-# LichtFeld Studio - Windows Buiild Instructions
+# LichtFeld Studio - Windows Build Instructions
 
-Currently, LichtFeld Studio does not offer any pre-compiled binaries as the project is geared towards devevelopment and with the current speed of development it does not make sense for binaries to be distributed to the casual user. 
+Currently, LichtFeld Studio does not offer any pre-compiled binaries, as the project is geared towards development and with the current speed of development it does not make sense for binaries to be distributed to the casual user. 
 
-But if you are not a developer but you are keen on trying LichtFeld Studio, then this step by step guide is intented  is for you!  Follow the steps below and you will be creating gaussian splats with LichtFeld Studio soon!
+But if you are not a developer but keen on trying LichtFeld Studio, then this step by step guide is intended for you!  Follow the steps below and you will soon be creating gaussian splats with LichtFeld Studio!
 
 Note: Installation of dependencies and compiling of LichtFeld Studio will take about 1 hour
 
@@ -34,7 +34,7 @@ Note: Installation of dependencies and compiling of LichtFeld Studio will take a
 
 ### Cuda Toolkit 12.8 <a name="cuda128"></a>
 - <u>Important</u>:
-	- Dont start installation until Visual Studio has completed installation
+	- Don't start installation until Visual Studio has completed installation
 	- if you have another version of Cuda Toolkit, uninstall it and re-install Cuda Toolkit 12.
 - Download from https://developer.nvidia.com/cuda-12-8-0-download-archive
 - Select windows as your operation system, select x86_64 as architecture and select your windows version and select "exe (local)".
@@ -112,7 +112,7 @@ Note: Installation of dependencies and compiling of LichtFeld Studio will take a
 		git clone https://github.com/microsoft/vcpkg.git
   		cd vcpkg && .\bootstrap-vcpkg.bat -disableMetrics && cd ..
 
-- set environment variable
+- Set environment variable
 
 		set VCPKG_ROOT=%CD%\vcpkg
   
@@ -145,11 +145,11 @@ Note: Installation of dependencies and compiling of LichtFeld Studio will take a
 		## Or if you want you can specify your own vcpkg
 		# cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE="<path-to-vcpkg>/scripts/buildsystems/vcpkg.cmake"
 
-- build LichtFeld Studio
+- Build LichtFeld Studio
  
 		cmake --build build --config Release -j
 
-After the last step is complete, you should have a new directory "\build\releases" where you can find "gaussian_splatting_cuda.exe" and you can execute that file to run LichtFeld Studio.
+After the last step is complete, you should have a new directory "\build\releases" where you can find "gaussian_splatting_cuda.exe", which you can execute to run LichtFeld Studio.
 
 <img width="1110" height="683" alt="image" src="https://github.com/user-attachments/assets/605c5b3a-53b3-4f16-85e2-05e9af2327cd" />
 
@@ -166,9 +166,9 @@ After the last step is complete, you should have a new directory "\build\release
 
 ### Common issues
 #### Release build works, but debug build fails with error "cannot open file 'python313_d.lib'"
-- this could be missing python debug libraries
+- This could be missing python debug libraries
 - Run the python setup again, choose "modify" and select "download debug binaries"
-- copy the files python313_d.lib from your python installation directory to the build\debug directory
+- Copy the files python313_d.lib from your python installation directory to the build\debug directory
   	  
 #### Cannot open include file
 
@@ -180,7 +180,7 @@ After the last step is complete, you should have a new directory "\build\release
 
 <img width="600" alt="image" src="https://github.com/user-attachments/assets/28b2ed73-d0b1-492a-aa1d-7762391e94d1" />
 
-- Possible cause: build files not up-to date with latest changes
+- Possible cause: Build files not up-to date with latest changes
 - Solution: Re-generate the configuration files using in the command prompt and rebuild LichtFeld Studio
         
 			cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -194,8 +194,8 @@ After the last step is complete, you should have a new directory "\build\release
    	- PATH -> must contain path to all binaries of the installed tools (Python, Visual Studio, Nvida Toolkit, Git)
 
 #### Manual installation of Cuda in Visual Studio
-- set CUDA_ROOT environment variable manually
-- copy the files from
+- Set CUDA_ROOT environment variable manually
+- Copy the files from
 	`C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\extras\visual_studio_integration\MSBuildExtensions`
    	to
    	`C:\Program Files\Microsoft Visual Studio\ 2022 \Community\MSBuild\Microsoft\VC\v170\BuildCustomizations`
