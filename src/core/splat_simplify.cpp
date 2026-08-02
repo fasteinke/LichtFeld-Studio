@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -899,6 +900,32 @@ namespace lfs::core {
                 std::max(1, input_count));
         }
 
+		[[nodiscard]] float group_own_scale_estimate(const NativeRows& rows, const std::vector<int>& indices) {
+			// Average of each member's largest own axis -- a proxy for "how big is
+			// this splat already", used to judge whether merging with spatial
+			// neighbours is size-consistent or spike-prone.
+			float sum = 0.0f;
+			for (int idx : indices) {
+				const size_t i3 = static_cast<size_t>(idx) * 3;
+				sum += std::max({rows.scales[i3 + 0], rows.scales[i3 + 1], rows.scales[i3 + 2]});
+			}
+			return sum / static_cast<float>(indices.size());
+		}
+
+		[[nodiscard]] float group_extent(const NativeRows& rows, const std::vector<int>& indices) {
+			float lo[3] = {std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
+			float hi[3] = {std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest()};
+			for (int idx : indices) {
+				const size_t i3 = static_cast<size_t>(idx) * 3;
+				for (int a = 0; a < 3; ++a) {
+					lo[a] = std::min(lo[a], rows.means[i3 + static_cast<size_t>(a)]);
+					hi[a] = std::max(hi[a], rows.means[i3 + static_cast<size_t>(a)]);
+				}
+			}
+			const float dx = hi[0] - lo[0], dy = hi[1] - lo[1], dz = hi[2] - lo[2];
+			return std::sqrt(dx * dx + dy * dy + dz * dz); // bbox diagonal
+		}
+
         [[nodiscard]] float progress_for_count(const int input_count, const int target_count, const int current_count) {
             if (input_count <= target_count)
                 return 0.95f;
@@ -906,6 +933,150 @@ namespace lfs::core {
             const float numer = static_cast<float>(std::clamp(input_count - current_count, 0, input_count - target_count));
             return 0.10f + 0.85f * (numer / denom);
         }
+
+        // Recursively split an oversized voxel group along its longest axis
+		// (median split) until every resulting subgroup is at or under the cap.
+		// This bounds how much a single merge can absorb, independent of local
+		// point density -- which a single global voxel size cannot guarantee.
+		void split_group_recursive(const NativeRows& rows,
+		                            std::vector<int> indices,
+		                            int max_group_size,
+		                            float compactness_factor,
+		                            int depth,
+		                            std::vector<std::vector<int>>& out_groups) {
+			const bool size_ok = static_cast<int>(indices.size()) <= max_group_size;
+			bool compact_ok = true;
+			if (size_ok && indices.size() > 1) {
+				const float own_scale = group_own_scale_estimate(rows, indices);
+				const float extent = group_extent(rows, indices);
+				// Reject (i.e. keep splitting) a group whose physical spread is
+				// much larger than the size of the splats being merged -- that
+				// mismatch is exactly what produces spike/needle artifacts.
+				compact_ok = extent <= compactness_factor * std::max(own_scale, kMinScale);
+			}
+
+			if ((size_ok && compact_ok) || depth <= 0 || indices.size() <= 1) {
+				out_groups.push_back(std::move(indices));
+				return;
+			}
+
+		    if (static_cast<int>(indices.size()) <= max_group_size || depth <= 0 || indices.size() <= 1) {
+		        out_groups.push_back(std::move(indices));
+		        return;
+		    }
+
+		    float lo[3] = {std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
+		    float hi[3] = {std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest()};
+		    for (int idx : indices) {
+		        const size_t i3 = static_cast<size_t>(idx) * 3;
+		        for (int a = 0; a < 3; ++a) {
+		            lo[a] = std::min(lo[a], rows.means[i3 + static_cast<size_t>(a)]);
+		            hi[a] = std::max(hi[a], rows.means[i3 + static_cast<size_t>(a)]);
+		        }
+		    }
+		    int split_axis = 0;
+		    float best_extent = hi[0] - lo[0];
+		    for (int a = 1; a < 3; ++a) {
+		        if (hi[a] - lo[a] > best_extent) {
+		            best_extent = hi[a] - lo[a];
+		            split_axis = a;
+		        }
+		    }
+
+		    if (best_extent < 1e-9f) {
+		        // Points are effectively coincident on every axis (true duplicates).
+		        // Can't split geometrically -- just chunk arbitrarily so no single
+		        // output row absorbs more than max_group_size splats.
+		        for (size_t start = 0; start < indices.size(); start += static_cast<size_t>(max_group_size)) {
+		            const size_t end = std::min(indices.size(), start + static_cast<size_t>(max_group_size));
+		            out_groups.emplace_back(indices.begin() + static_cast<ptrdiff_t>(start),
+		                                     indices.begin() + static_cast<ptrdiff_t>(end));
+		        }
+		        return;
+		    }
+
+		    std::sort(indices.begin(), indices.end(), [&](int a, int b) {
+		        return rows.means[static_cast<size_t>(a) * 3 + static_cast<size_t>(split_axis)] <
+		               rows.means[static_cast<size_t>(b) * 3 + static_cast<size_t>(split_axis)];
+		    });
+		    const size_t mid = indices.size() / 2;
+		    std::vector<int> left(indices.begin(), indices.begin() + static_cast<ptrdiff_t>(mid));
+		    std::vector<int> right(indices.begin() + static_cast<ptrdiff_t>(mid), indices.end());
+
+		    split_group_recursive(rows, std::move(left), max_group_size, 3.0f, depth - 1, out_groups);
+		    split_group_recursive(rows, std::move(right), max_group_size, 3.0f, depth - 1, out_groups);
+		}
+
+		[[nodiscard]] std::vector<std::vector<int>> group_into_voxels_capped(
+					const NativeRows& rows,
+					float voxel_size,
+					const float bounds_min[3],
+					int max_group_size) {
+		    auto raw_groups = group_into_voxels(rows, voxel_size, bounds_min);
+		    std::vector<std::vector<int>> capped;
+		    capped.reserve(raw_groups.size());
+		    constexpr int kMaxSplitDepth = 24; // 2^24 comfortably covers multi-million-point groups
+		    for (auto& g : raw_groups) {
+		        if (static_cast<int>(g.size()) <= max_group_size) {
+		            capped.push_back(std::move(g));
+		        } else {
+		            split_group_recursive(rows, std::move(g), max_group_size, 3.0f, kMaxSplitDepth, capped);
+		        }
+		    }
+		    return capped;
+		}
+
+		// Each group of size k merging into 1 output row "saves" (k - 1) rows.
+		// If merging everything eligible would drop us below target_count, only
+		// merge the subset of groups whose savings sum to exactly (or as close as
+		// possible to) the deficit, and leave the remainder as untouched singletons.
+		// This makes the final count exact-or-near-exact by construction, rather
+		// than depending on the voxel grid happening to produce the right count.
+		void trim_groups_to_target(std::vector<std::vector<int>>& groups,
+									int current_count,
+									int target_count) {
+			// Total savings if every eligible group were merged in full
+			int full_savings = 0;
+			for (const auto& g : groups)
+				if (g.size() > 1)
+					full_savings += static_cast<int>(g.size()) - 1;
+
+			const int deficit = current_count - target_count;
+			if (deficit <= 0 || full_savings <= deficit)
+				return; // won't undershoot -- merge everything as normal
+
+			// Greedily select groups (largest savings first) until we've removed
+			// exactly `deficit` rows, or as close as achievable.
+			std::vector<int> order(groups.size());
+			std::iota(order.begin(), order.end(), 0);
+			std::sort(order.begin(), order.end(), [&](int a, int b) {
+			    return groups[a].size() < groups[b].size(); // ascending: prefer small, tight merges
+			});
+
+			std::vector<bool> keep_merged(groups.size(), false);
+			int running_savings = 0;
+			for (const int gi : order) {
+				const int savings = static_cast<int>(groups[gi].size()) - 1;
+				if (savings <= 0)
+					continue;
+				if (running_savings + savings <= deficit) {
+					keep_merged[gi] = true;
+					running_savings += savings;
+				}
+			}
+
+			std::vector<std::vector<int>> adjusted;
+			adjusted.reserve(groups.size() + static_cast<size_t>(current_count));
+			for (size_t gi = 0; gi < groups.size(); ++gi) {
+				if (keep_merged[gi] || groups[gi].size() <= 1) {
+					adjusted.push_back(std::move(groups[gi]));
+				} else {
+					for (const int idx : groups[gi])
+						adjusted.push_back({idx}); // leave un-merged this pass
+				}
+			}
+			groups = std::move(adjusted);
+		}
 
         [[nodiscard]] std::expected<SplatSimplifyWorkset, std::string> simplify_workset(
             const SplatSimplifyWorkset& input,
@@ -973,16 +1144,23 @@ namespace lfs::core {
 
                     float bounds_min[3], bounds_max[3];
                     compute_bounds(current, bounds_min, bounds_max);
-                    const int pass_target_count = pass_target_count_for(
+					const int pass_target_count = pass_target_count_for(
                         current.count,
                         target_count,
                         options.lod_base);
                     float voxel_size = compute_voxel_size(current, pass_target_count);
 
-                    // If we're not reducing enough, increase voxel size
+                    // Bound the worst case: no single output splat can absorb
+                    // more than roughly (current/pass_target) input splats.
+                    // This prevents a density spike from collapsing a huge
+                    // fraction of the cloud in one voxel, regardless of how
+                    // wrong compute_voxel_size's uniform-density guess is.
+                    const int max_group_size = std::max(2, current.count / std::max(1, pass_target_count) + 1);
+
                     bool reduced = false;
+                    std::vector<std::vector<int>> groups;
                     for (int attempt = 0; attempt < 10 && !reduced; ++attempt) {
-                        auto groups = group_into_voxels(current, voxel_size, bounds_min);
+                        groups = group_into_voxels_capped(current, voxel_size, bounds_min, max_group_size);
 
                         int merge_count = 0;
                         for (const auto& g : groups)
@@ -990,7 +1168,6 @@ namespace lfs::core {
                                 ++merge_count;
 
                         if (merge_count == 0) {
-                            // No merges possible with this voxel size, increase it
                             voxel_size *= 1.5f;
                             continue;
                         }
@@ -999,6 +1176,9 @@ namespace lfs::core {
                                              pass_progress + 0.02f,
                                              pass_prefix + "merging " + std::to_string(merge_count) + " voxels"))
                             return std::unexpected("Cancelled");
+
+		                current = groups.empty() ? current : current; // (groups already computed via cap)
+                        trim_groups_to_target(groups, current.count, target_count);
 
                         current = merge_voxel_groups(current, groups, keep_idx, history, pass);
                         reduced = true;
@@ -1068,3 +1248,4 @@ namespace lfs::core {
     }
 
 } // namespace lfs::core
+
